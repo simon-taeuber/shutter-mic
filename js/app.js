@@ -155,39 +155,65 @@ const csvCell=v=>{const t=String(v??"");return /[",;\n]/.test(t)?`"${t.replace(/
 const csvOf=rows=>"﻿"+rows.map(r=>r.map(csvCell).join(",")).join("\n");
 
 /* ---------- Overlay of all shots at one speed ---------- */
-/* Each saved trace is lined up on its own start mark (light on, or the first-curtain click), so every line opens at 0 ms
-   and closes at its measured time. Typed shots have no trace and show only as a close tick. */
+/* Top: a blue target bar, then one bar per shot from open to close, coloured by how far off it is (newest first).
+   Below: each saved trace lined up on its own start mark (light on, or the first-curtain click), so every line opens at 0 ms.
+   A tapped bar stays selected (ovSel): its waveform takes the bar's colour and the others fade. Typed shots have a bar but no waveform. */
+let ovSel=null;
+const OV_ROWS=12,OV_LANE=17;
 function drawOverlay(cv,list,nominal){
+  const rows=list.slice(0,OV_ROWS),lanesH=(rows.length+1)*OV_LANE+8,waveH=matchMedia("(max-width:800px)").matches?170:210;
+  cv.style.height=(lanesH+waveH)+"px";
   const css=getComputedStyle(document.documentElement),c=n=>css.getPropertyValue(n).trim();
-  const dpr=window.devicePixelRatio||1,W=cv.clientWidth||600,H=cv.clientHeight||240;cv.width=W*dpr;cv.height=H*dpr;
+  const dpr=window.devicePixelRatio||1,W=cv.clientWidth||600,H=lanesH+waveH;cv.width=W*dpr;cv.height=H*dpr;
   const g=cv.getContext("2d");g.scale(dpr,dpr);g.clearRect(0,0,W,H);
-  const meas=list.map(s=>s.measured),lo=Math.min(...meas),hi=Math.max(...meas),avg=meas.reduce((a,b)=>a+b,0)/meas.length;
-  const pad=Math.max(0.35*Math.max(nominal,avg),0.002),x0=-pad,x1=Math.max(hi,nominal)+pad;
-  const L=8,R=8,T=18,B=30,pw=W-L-R,ph=H-T-B,X=t=>L+(t-x0)/(x1-x0)*pw,Y=v=>T+ph-v/255*ph;
-  const font=(w,sz,f)=>`${w} ${sz}px ${c(f)}`;
+  const meas=list.map(s=>s.measured),hi=Math.max(...meas),avg=meas.reduce((a,b)=>a+b,0)/meas.length;
+  const pad=Math.max(0.35*Math.max(nominal,avg),0.002),x0=-pad,x1=Math.max(hi,nominal*Math.pow(2,1/3))+pad;
+  const L=8,R=8,T=4,B=30,pw=W-L-R,wT=T+lanesH,X=t=>L+(t-x0)/(x1-x0)*pw,Y=v=>H-B-v/255*(H-B-wT-6);
+  const font=(w,sz,f)=>`${w} ${sz}px ${c(f)}`,mst=x=>(x*1000).toFixed(x<0.01?2:1)+" ms";
+  const col={ok:c("--dof-green"),warn:c("--dof-yellow"),bad:c("--dof-red")};
+  if(ovSel&&!rows.some(s=>s.id===ovSel))ovSel=null;
   // grid in ms
   const span=(x1-x0)*1000,step=[0.5,1,2,5,10,20,25,50,100,200,500,1000].find(s=>span/s<=8)||2000;
   g.font=font(400,11,"--font-mono");g.textAlign="center";g.fillStyle=c("--muted");
   for(let t=Math.ceil(x0*1000/step)*step;t<=x1*1000+1e-9;t+=step){const x=X(t/1000);
-    g.strokeStyle=c("--rule");g.lineWidth=Math.abs(t)<1e-9?1.5:1;g.beginPath();g.moveTo(x,T);g.lineTo(x,T+ph);g.stroke();
+    g.strokeStyle=c("--rule");g.lineWidth=Math.abs(t)<1e-9?1.5:1;g.beginPath();g.moveTo(x,T);g.lineTo(x,H-B);g.stroke();
     g.fillText(+t.toFixed(1)+"",x,H-B+16)}
   g.font=font(600,11,"--font-display");g.fillText("MS FROM OPENING",L+pw/2,H-3);
-  // spread band
-  if(list.length>1){g.fillStyle=c("--accent");g.globalAlpha=.16;g.fillRect(X(lo),T,Math.max(2,X(hi)-X(lo)),ph);g.globalAlpha=1}
-  // shots, oldest first so the latest is on top
-  [...list].reverse().forEach((s,i,arr)=>{
-    const last=i===arr.length-1,tr=s.trace;
-    g.strokeStyle=last?c("--ink"):c("--muted");g.globalAlpha=last?1:.45;g.lineWidth=last?1.8:1.2;
-    if(tr&&tr.v?.length){const off=tr.start,n=tr.v.length;g.beginPath();let on=false;
-      tr.v.forEach((v,k)=>{const t=tr.t0+(tr.t1-tr.t0)*(k+.5)/n-off;if(t<x0||t>x1){on=false;return}const x=X(t),y=Y(v);on?g.lineTo(x,y):g.moveTo(x,y);on=true});g.stroke()}
-    g.lineWidth=2;g.beginPath();g.moveTo(X(s.measured),T+ph);g.lineTo(X(s.measured),T+ph-10);g.stroke();g.globalAlpha=1;
-  });
-  // target and average
-  g.strokeStyle=c("--dof-blue");g.lineWidth=2;g.setLineDash([6,4]);g.beginPath();g.moveTo(X(nominal),T);g.lineTo(X(nominal),T+ph);g.stroke();g.setLineDash([]);
-  g.strokeStyle=c("--accent");g.lineWidth=2.5;g.beginPath();g.moveTo(X(avg),T);g.lineTo(X(avg),T+ph);g.stroke();
-  const txt="Target "+(nominal*1000).toFixed(nominal<0.01?2:1)+" ms";g.font=font(600,12,"--font-display");g.fillStyle=c("--dof-blue");
-  const tw=g.measureText(txt).width;let left=X(avg)>=X(nominal);if(left&&X(nominal)-6-tw<0)left=false;if(!left&&X(nominal)+6+tw>W)left=true;
-  g.textAlign=left?"right":"left";g.fillText(txt,X(nominal)+(left?-6:6),T-5);
+  g.strokeStyle=c("--rule");g.lineWidth=1;g.beginPath();g.moveTo(L,wT-2);g.lineTo(L+pw,wT-2);g.stroke();
+  // target ±1/3 EV band
+  const tl=nominal*Math.pow(2,-1/3),th=nominal*Math.pow(2,1/3);
+  g.fillStyle=c("--dof-green");g.globalAlpha=.13;g.fillRect(X(tl),T,X(th)-X(tl),H-B-T);g.globalAlpha=1;
+  // waveforms, oldest first so the newest (and the selected one) end on top
+  const wave=(s,stroke,alpha,width)=>{const tr=s.trace;if(!tr?.v?.length)return;const off=tr.start,n=tr.v.length;
+    g.strokeStyle=stroke;g.globalAlpha=alpha;g.lineWidth=width;g.beginPath();let on=false;
+    tr.v.forEach((v,k)=>{const t=tr.t0+(tr.t1-tr.t0)*(k+.5)/n-off;if(t<x0||t>x1){on=false;return}const x=X(t),y=Y(v);on?g.lineTo(x,y):g.moveTo(x,y);on=true});
+    g.stroke();g.globalAlpha=1};
+  [...rows].reverse().forEach((s,i,arr)=>{if(s.id===ovSel)return;const newest=i===arr.length-1;
+    wave(s,newest?c("--ink"):c("--muted"),ovSel?.15:newest?.9:.4,newest?1.6:1.1)});
+  const selShot=rows.find(s=>s.id===ovSel);if(selShot)wave(selShot,col[devClass(selShot.stops)],1,2.4);
+  // target and average lines
+  g.strokeStyle=c("--dof-blue");g.lineWidth=2;g.setLineDash([6,4]);g.beginPath();g.moveTo(X(nominal),T);g.lineTo(X(nominal),H-B);g.stroke();g.setLineDash([]);
+  g.strokeStyle=c("--accent");g.lineWidth=2.5;g.beginPath();g.moveTo(X(avg),wT-2);g.lineTo(X(avg),H-B);g.stroke();
+  const halo=(txt,x,y,fill,align)=>{g.textAlign=align;g.lineWidth=4;g.strokeStyle=c("--surface");g.strokeText(txt,x,y);g.fillStyle=fill;g.fillText(txt,x,y)};
+  g.font=font(600,12,"--font-display");
+  const aRight=X(avg)>=X(nominal);halo("Average "+mst(avg),X(avg)+(aRight?6:-6),H-B-8,c("--accent"),aRight?"left":"right");
+  halo("±⅓ EV",X(tl)+5,wT+12,c("--dof-green"),"left");
+  // bars: target first, then shots newest first
+  const hits=[];
+  const bar=(row,len,fill,alpha,label,bold,outline)=>{const y=T+row*OV_LANE+4,w=Math.max(2,X(len)-X(0));
+    g.globalAlpha=alpha;g.fillStyle=fill;g.fillRect(X(0),y,w,11);g.globalAlpha=1;
+    if(outline){g.strokeStyle=c("--ink");g.lineWidth=2;g.strokeRect(X(0),y,w,11)}
+    g.font=font(bold?600:400,11,"--font-mono");const tw=g.measureText(label).width,right=X(len)+6+tw<=L+pw;
+    if(right)halo(label,X(len)+6,y+10,fill,"left");else halo(label,Math.min(X(len)-6,L+pw),y+10,c("--ink"),"right");
+    return {y0:y-3,y1:y+14}};
+  bar(0,nominal,c("--dof-blue"),1,"Target "+mst(nominal),true,false);
+  rows.forEach((s,i)=>{const k=devClass(s.stops),sel=s.id===ovSel;
+    const box=bar(i+1,s.measured,col[k],ovSel&&!sel?.3:i===0||sel?1:.75,`${mst(s.measured)}  ${fmtStops(s.stops)}${s.manual?"  typed":""}`,i===0||sel,sel);
+    hits.push({...box,id:s.id})});
+  if(list.length>rows.length){g.font=font(400,11,"--font-display");g.textAlign="right";g.fillStyle=c("--muted");g.fillText(`newest ${rows.length} of ${list.length} shown`,L+pw,T+10)}
+  cv.onclick=e=>{const r=cv.getBoundingClientRect(),y=e.clientY-r.top,h=hits.find(b=>y>=b.y0&&y<=b.y1);
+    if(!h)return;ovSel=ovSel===h.id?null:h.id;render()};
+  cv.style.cursor="pointer";
 }
 
 /* ---------- Page ---------- */
@@ -252,8 +278,8 @@ function render(){
           <div><div class="label">Off by</div><div class="ov-v mono dev-${d===null?"":devClass(d)}">${d===null?"—":fmtStops(d)}</div><div class="hint" style="font-size:.8rem">${d===null?"":verdict(d)}</div></div>
           <div><div class="label">Spread</div><div class="ov-v mono ${S&&S.n>1?"dev-"+devClass(S.spread/2):""}">${S&&S.n>1?S.spread.toFixed(2)+" EV · "+ms(S.max-S.min)+" ms":"—"}</div></div>
           <div><div class="label">Shots</div><div class="ov-v mono">${S?S.n:0}</div></div></div>
-        ${S?`<canvas id="ov-cv" class="ov-cv" aria-label="All ${S.n} shots at ${esc(label)} overlaid from the moment the shutter opens, with target, average and spread marked"></canvas>
-        <div class="ov-key hint"><span><i style="background:var(--muted);opacity:.5"></i>Each shot</span><span><i style="background:var(--ink)"></i>Latest</span><span><i style="background:var(--accent)"></i>Average</span><span><i class="dash"></i>Target</span><span><i style="background:var(--accent);opacity:.18"></i>Spread</span></div>`
+        ${S?`<canvas id="ov-cv" class="ov-cv" aria-label="All ${S.n} shots at ${esc(label)} overlaid from the moment the shutter opens, with a length bar per shot, the target and the average marked"></canvas>
+        <div class="ov-key hint"><span><i style="background:var(--dof-blue)"></i>Target</span><span><i style="background:var(--dof-green)"></i>Within ⅓ EV</span><span><i style="background:var(--dof-yellow)"></i>⅓–⅔ EV off</span><span><i style="background:var(--dof-red)"></i>More than ⅔ EV</span><span><i style="background:var(--dof-green);opacity:.3"></i>Target ±⅓ EV</span><span><i style="background:var(--accent)"></i>Average</span><span>Tap a bar to pick out its shot</span></div>`
           :`<div class="tt-empty hint">The shots at this speed appear here, drawn over each other.</div>`}
         ${err?`<div class="hint err">${esc(err)}</div>`:""}${S?.last?.warn?`<div class="hint" style="color:var(--dof-yellow)">${esc(S.last.warn)}</div>`:""}</div>
       ${rec.on?`<button type="button" id="rec-arm" class="big ${rec.live?"":"primary"}" style="margin-top:14px" ${rec.state==="listen"?"":"disabled"}>${rec.live?"Armed · tap to disarm":"Arm (space bar)"}</button>
@@ -278,7 +304,7 @@ function render(){
           <option value="speed" ${st.hist==="speed"?"selected":""}>Selected speed (${esc(label)})</option>
           <option value="all" ${st.hist==="all"?"selected":""}>All speeds</option>
           ${speeds.map(([n,l])=>`<option value="${esc(l)}" ${st.hist===l?"selected":""}>${esc(l)} (${cnt(l)})</option>`).join("")}</select></div>
-      ${hist.length?`<div class="shots">${hist.map(s=>`<div class="shot" data-shot="${esc(s.id)}">
+      ${hist.length?`<div class="shots">${hist.map(s=>`<div class="shot${s.id===ovSel?" sel":""}" data-shot="${esc(s.id)}">
           <div class="shot-1"><span class="mono shot-set">${esc(s.set)}</span><span class="mono">${esc(fmtSec(s.measured).split(" · ").pop())}</span>${dev(s.stops)}
             <span class="hint mono">${new Date(s.at).toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
             <span class="hint">${s.manual?"typed":s.mode==="light"?"sensor":"mic"}</span></div>
@@ -326,6 +352,7 @@ function bind(v,{speeds,mine,label,nom,stats}){
     delete errs[label];addShot(label,nom,{measured:val/1000,manual:true});re()};
   v.querySelectorAll("[data-shot]").forEach(row=>{const s=shots.find(x=>x.id===row.dataset.shot);if(!s)return;
     row.querySelector("[data-snote]").onchange=e=>{s.note=e.target.value.trim();saveShots()};
+    const head=row.querySelector(".shot-1");if(s.set===label){head.style.cursor="pointer";head.onclick=()=>{ovSel=ovSel===s.id?null:s.id;re()}}
     const b=row.querySelector("[data-sdel]");b.onclick=()=>{if(b.dataset.armed!=="1"){b.dataset.armed="1";b.textContent="Tap again";return}shots=shots.filter(x=>x!==s);delete shotAudio[s.id];saveShots();re()}});
   const out=()=>JSON.stringify(buildExport(),null,1);
   $("#m-json").onclick=()=>{download(fileStem()+".json",out(),"application/json");toast("Saved. Import it in the Workbench Shutter Tester.")};
