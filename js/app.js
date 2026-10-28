@@ -9,10 +9,10 @@ const store={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.
 let toastT=0;
 function toast(msg){const t=$("#toast");t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,3200)}
 
-let st={model:"",hubId:"",mode:"audio",reps:1,note:"",hist:"speed",withTest:true,...store.get("shutterMic.settings",{})};
+let st={model:"",hubId:"",mode:"audio",note:"",hist:"speed",withTest:true,...store.get("shutterMic.settings",{})};
 let shots=store.get("shutterMic.shots",[]);
 const shotAudio={}; // shot id -> decoded audio from this page session, re-analysed when the method changes
-const saveSettings=()=>{const {model,hubId,mode,reps,hist,withTest}=st;store.set("shutterMic.settings",{model,hubId,mode,reps,hist,withTest})};
+const saveSettings=()=>{const {model,hubId,mode,hist,withTest}=st;store.set("shutterMic.settings",{model,hubId,mode,hist,withTest})};
 const saveShots=()=>store.set("shutterMic.shots",shots);
 /* Shots are grouped by camera: the Hub ID when one is typed, else the model. */
 const camKey=()=>(st.hubId.trim().toUpperCase()||st.model||"none");
@@ -87,10 +87,7 @@ function recFinish(){
       const when=new Date().toTimeString().slice(0,8);
       if(a.error){errs[label]=a.error;rec.last=`${label}: no reading, fire again.`}
       else{delete errs[label];addShot(label,nominal,{measured:a.measured,analysis:a,file:"Recorded in Shutter Mic "+when,dec,warn:a.warn});
-        rec.last=`${label}: ${fmtSec(a.measured)} (${fmtStops(stopsOff(a.measured,nominal))}).`;
-        const mine=camShots(),cnt=l=>mine.filter(s=>s.set===l).length;
-        if(cnt(label)>=st.reps){const i=speeds.findIndex(([n,l])=>l===label),next=[...speeds.slice(i+1),...speeds.slice(0,i)].find(([n,l])=>cnt(l)<st.reps);
-          rec.armed=next?next[1]:label;if(!next)rec.last+=" All speeds measured."}}
+        rec.last=`${label}: ${fmtSec(a.measured)} (${fmtStops(stopsOff(a.measured,nominal))}).`}
     }
     rec.cool=Math.round(rec.sr*0.8);if(rec.on)rec.state="listen";
     render();
@@ -166,7 +163,7 @@ function render(){
   const v=$("#view");
   const speeds=speedsFor(st.model),mine=camShots(),stats={};for(const [n,l] of speeds)stats[l]=speedStats(mine,l,n);
   const cnt=l=>mine.filter(s=>s.set===l).length;
-  if(!rec.armed||!speeds.some(([n,l])=>l===rec.armed))rec.armed=(speeds.find(([n,l])=>cnt(l)<st.reps)||speeds[0])[1];
+  if(!rec.armed||!speeds.some(([n,l])=>l===rec.armed))rec.armed=(speeds.find(([n,l])=>!cnt(l))||speeds[0])[1];
   const [nom,label]=speeds.find(([n,l])=>l===rec.armed);
   const S=stats[label],d=S?S.stops:null,err=errs[label];
   const done=speeds.filter(([n,l])=>stats[l]);
@@ -195,8 +192,7 @@ function render(){
       <div class="tt-list" role="listbox" aria-label="Shutter speeds" style="margin-top:8px">${speeds.map(([n,l])=>{const x=stats[l];
         return `<button type="button" role="option" class="tt-item${l===label?" on":""}" aria-selected="${l===label}" data-sel="${esc(l)}"><span class="tt-l mono">${esc(l)}</span>
           <span class="tt-r">${x?`<span class="mono tt-m">×${x.n}</span>${dev(x.stops)}`:errs[l]?`<span class="hint err">no reading</span>`:`<span class="hint">—</span>`}</span></button>`}).join("")}</div>
-      <label class="row" style="margin-top:12px;font-size:.9rem"><span class="label">Shots per speed</span><select id="m-reps" style="width:auto;padding:4px 8px">${[1,2,3,5].map(k=>`<option value="${k}" ${st.reps===k?"selected":""}>${k}</option>`).join("")}</select></label>
-      <p class="hint" style="margin:4px 0 0;font-size:.8rem">Listening moves to the next speed after this many good shots.</p></section>
+      <p class="hint" style="margin:10px 0 0;font-size:.8rem">The selected speed stays until you pick another one.</p></section>
     <section class="panel tt-send"><h2>Send to the Workbench</h2>
       <p style="margin:6px 0 0">${mine.length?`${mine.length} shot${mine.length>1?"s":""} over ${done.length} speed${done.length>1?"s":""} · worst <span class="dev dev-${devClass(worst)} mono">±${worst.toFixed(2)} EV</span>`:`<span class="hint">No shots for this camera yet.</span>`}</p>
       <label class="field" style="margin-top:10px"><span class="label">Test note</span><input id="m-note" value="${esc(st.note)}" placeholder="e.g. fresh batteries, after cleaning"></label>
@@ -224,7 +220,7 @@ function render(){
           ${rec.devs.length>1?`<label class="field"><span class="label">Input</span><select id="rec-dev">${rec.devs.map((x,i)=>`<option value="${esc(x.deviceId)}" ${x.deviceId===rec.devId?"selected":""}>${esc(x.label||"Input "+(i+1))}</option>`).join("")}</select></label>`:`<div class="field"><span class="label">Input</span><span>${esc(rec.devLabel||"Default microphone")}</span></div>`}
           <label class="field"><span class="label">Trigger</span><select id="rec-sens"><option value="3" ${rec.sens==3?"selected":""}>Sensitive (weak sensor signal)</option><option value="6" ${rec.sens==6?"selected":""}>Normal</option><option value="12" ${rec.sens==12?"selected":""}>Noisy room</option></select></label></div>
         ${rec.last?`<p class="hint" style="margin:10px 0 0">Last shot: <span class="mono">${esc(rec.last)}</span></p>`:""}</div>`
-      :`<p class="hint" style="margin:12px 0 0">Press Start listening, set the dial to ${esc(label)} and fire. The page catches one shot per Arm, measures it and moves on once this speed has ${st.reps} good shot${st.reps>1?"s":""}. Wind the camera before you arm, so the winding isn't caught.</p>`}
+      :`<p class="hint" style="margin:12px 0 0">Press Start listening, set the dial to ${esc(label)} and fire. The page catches one shot per Arm and measures it. The speed stays selected until you pick another. Wind the camera before you arm, so the winding isn't caught.</p>`}
       ${rec.err?`<p class="hint err" style="margin:10px 0 0">${esc(rec.err)}</p>`:""}
       <div class="tt-trace">${S?.trace?`<canvas class="wave" style="width:100%;height:110px;display:block" aria-label="Latest shot with the measured start and end marked"></canvas><div class="hint mono" style="font-size:.75rem">Latest trace · ${traceCaption(S.trace.trace)}</div>`
         :`<div class="tt-empty hint">${S?"Entered by hand, no trace.":"The trace of the shot appears here."}</div>`}
@@ -263,7 +259,6 @@ function bind(v,{speeds,mine,label,nom,stats}){
   v.querySelectorAll("[data-hist]").forEach(b=>b.onclick=()=>{st.hist=b.dataset.hist;saveSettings();re()});
   v.querySelectorAll("[data-sel]").forEach(b=>b.onclick=()=>{rec.armed=b.dataset.sel;re();if(b.classList.contains("tt-item")&&matchMedia("(max-width:800px)").matches)$("#m-rec")?.scrollIntoView({block:"start",behavior:"smooth"})});
   const lst=v.querySelector(".tt-list");lst.onkeydown=e=>{if(!["ArrowDown","ArrowUp"].includes(e.key))return;e.preventDefault();const i=speeds.findIndex(([n,l])=>l===label)+(e.key==="ArrowDown"?1:-1);if(speeds[i]){rec.armed=speeds[i][1];re();v.querySelector(".tt-item.on")?.focus()}};
-  $("#m-reps").onchange=e=>{st.reps=+e.target.value;saveSettings()};
   $("#m-note").oninput=e=>st.note=e.target.value;
   $("#m-test").onchange=e=>{st.withTest=e.target.checked;saveSettings()};
   $("#rec-go").onclick=async()=>{if(rec.on){recStop();re();return}audioCtx();if(await recStart())recArm();else re()};
