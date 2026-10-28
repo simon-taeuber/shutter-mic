@@ -45,6 +45,7 @@ button,.btn{font-family:var(--font-display);font-weight:600;font-size:1rem;color
 button:disabled{opacity:.5;cursor:default}
 button.primary,.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 button.danger{color:var(--dof-red)}
+button.big{width:100%;justify-content:center;font-size:1.3rem;padding:12px 20px}
 button.small,.btn.small{font-size:.85rem;padding:4px 10px}
 .chip{border-radius:999px}
 .chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}

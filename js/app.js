@@ -29,7 +29,7 @@ function addShot(label,nominal,o){
 }
 
 /* ---------- Live recording (same trigger and capture as the Workbench Tester) ---------- */
-var rec={on:false,stream:null,ctx:null,node:null,src:null,sr:48000,ring:null,ri:0,filled:0,blocks:0,floor:0,level:0,thr:0,dc:0,cool:0,state:"idle",armed:null,cap:null,capLeft:0,devId:"",devLabel:"",devs:[],err:"",last:"",sens:6,raf:0};
+var rec={on:false,live:false,stream:null,ctx:null,node:null,src:null,sr:48000,ring:null,ri:0,filled:0,blocks:0,floor:0,level:0,thr:0,dc:0,cool:0,state:"idle",armed:null,cap:null,capLeft:0,devId:"",devLabel:"",devs:[],err:"",last:"",sens:6,raf:0};
 const REC_PRE=0.35;
 const recTail=nom=>{const n=nom||0.5;return st.mode==="light"?Math.min(6,n+0.4):Math.min(6.5,n+0.7)};
 const micAllowed=()=>{try{const p=document.permissionsPolicy||document.featurePolicy;return p?.allowsFeature?p.allowsFeature("microphone"):true}catch{return true}};
@@ -62,7 +62,7 @@ async function recStart(){
 function recStop(){
   if(!rec||!(rec.on||rec.stream))return;
   try{if(rec.node){rec.node.onaudioprocess=null;rec.node.disconnect()}rec.src?.disconnect();rec.an?.disconnect();rec.stream?.getTracks().forEach(t=>{t.onended=null;t.stop()});rec.ctx?.close?.()}catch{}
-  cancelAnimationFrame(rec.raf);Object.assign(rec,{on:false,stream:null,ctx:null,node:null,src:null,an:null,state:"idle",cap:null});
+  cancelAnimationFrame(rec.raf);Object.assign(rec,{on:false,live:false,stream:null,ctx:null,node:null,src:null,an:null,state:"idle",cap:null});
 }
 function recBlock(x){
   let pk=0;for(let i=0;i<x.length;i++){rec.dc+=(x[i]-rec.dc)*0.0005;const d=Math.abs(x[i]-rec.dc);if(d>pk)pk=d}
@@ -70,11 +70,11 @@ function recBlock(x){
   if(rec.state==="capture"){rec.cap.push(Float32Array.from(x));rec.capLeft-=x.length;if(rec.capLeft<=0)recFinish();return}
   const R=rec.ring;for(let i=0;i<x.length;i++){R[rec.ri]=x[i];rec.ri=(rec.ri+1)%R.length}rec.filled=Math.min(R.length,rec.filled+x.length);rec.blocks++;
   rec.thr=Math.max(rec.floor*rec.sens,0.012);
-  const ready=rec.state==="listen"&&rec.armed&&rec.blocks>12&&rec.filled>=R.length;
+  const ready=rec.state==="listen"&&rec.live&&rec.armed&&rec.blocks>12&&rec.filled>=R.length;
   if(rec.cool>0)rec.cool-=x.length;
   else if(ready&&pk>rec.thr){
     const pre=new Float32Array(R.length);pre.set(R.subarray(rec.ri));pre.set(R.subarray(0,rec.ri),R.length-rec.ri);
-    rec.cap=[pre];rec.capLeft=Math.round(rec.sr*recTail(nominalOf(rec.armed)));rec.state="capture";return}
+    rec.live=false;rec.cap=[pre];rec.capLeft=Math.round(rec.sr*recTail(nominalOf(rec.armed)));rec.state="capture";return}
   rec.floor=rec.blocks<4?pk:Math.min(rec.floor*0.96+pk*0.04,Math.max(rec.floor,pk)); // slow noise-floor tracker, ignores single spikes
 }
 function recFinish(){
@@ -96,6 +96,13 @@ function recFinish(){
     render();
   },0);
 }
+/* One shot per Arm: after a capture the page ignores every sound (winding, the room) until Arm is tapped again.
+   Arming skips the next 0.4 s so the tap on the phone itself doesn't trigger. */
+function recArm(on=true){
+  if(!rec.on)return;rec.live=on;
+  if(on)rec.cool=Math.max(rec.cool,Math.round(rec.sr*0.4));
+  render();
+}
 function recMeter(){
   cancelAnimationFrame(rec.raf);if(!rec.on)return;
   const bar=$("#rec-bar"),mk=$("#rec-thr"),sx=$("#rec-state");if(!bar)return;
@@ -115,7 +122,7 @@ function recMeter(){
     :age>3000&&now-rec.loudT>3000?"The input is completely silent. Check that the right input is picked, the sensor is plugged in and its volume is up (phone: the headset jack needs a 4-pole plug with the mic on the sleeve ring)."
     :"";
   if(msg!==rec.diag){rec.diag=msg;const w=$("#rec-warn");if(w){w.textContent=msg;w.hidden=!msg}$("#rec-wake")&&($("#rec-wake").hidden=!(run!=="running"||!rec.blocks))}
-  sx.textContent=rec.state==="capture"?"Recording the shot…":rec.state==="busy"?"Measuring…":!rec.armed?"Pick a speed":rec.blocks<=12?"Getting the noise level…":`Ready for ${rec.armed}: set the dial and fire`;
+  sx.textContent=rec.state==="capture"?"Recording the shot…":rec.state==="busy"?"Measuring…":!rec.armed?"Pick a speed":!rec.live?`Wind, set the dial to ${rec.armed}, then tap Arm`:rec.blocks<=12?"Getting the noise level…":`Armed for ${rec.armed}: fire`;
   rec.raf=requestAnimationFrame(recMeter);
 }
 
@@ -206,7 +213,8 @@ function render(){
         <div class="tt-stat"><div class="label">${S&&S.n>1?"Average":"Measured"}</div><div class="tt-v mono">${S?esc(fmtSec(S.avg).split(" · ")[0]):"—"}</div><div class="hint mono">${S?ms(S.avg)+" ms":""}</div></div>
         <div class="tt-stat"><div class="label">Off by</div><div class="tt-v mono dev-${d===null?"":devClass(d)}">${d===null?"—":fmtStops(d)}</div><div class="hint">${d===null?"":verdict(d)}</div></div>
         <div class="tt-stat"><div class="label">Spread</div><div class="tt-v mono ${S&&S.n>1?"dev-"+devClass(S.spread/2):""}">${S&&S.n>1?S.spread.toFixed(2)+" EV":"—"}</div><div class="hint mono">${S?`N ${S.n}${S.n>1?` · ${ms(S.min)}–${ms(S.max)} ms`:""}`:""}</div></div></div>
-      ${rec.on?`<div style="margin-top:14px"><strong id="rec-state" class="state"></strong>
+      ${rec.on?`<button type="button" id="rec-arm" class="big ${rec.live?"":"primary"}" style="margin-top:14px" ${rec.state==="listen"?"":"disabled"}>${rec.live?"Armed · tap to disarm":"Arm (space bar)"}</button>
+        <div style="margin-top:12px"><strong id="rec-state" class="state"></strong>
         <div class="meter" aria-hidden="true"><div id="rec-bar" class="meter-bar"></div><div id="rec-thr" class="meter-thr"></div></div>
         <div class="hint" style="font-size:.8rem">Level, with the trigger line. The line should sit well above the bar while nothing happens.</div>
         <div class="hint mono" id="rec-diag" style="font-size:.75rem;margin-top:4px"></div>
@@ -216,7 +224,7 @@ function render(){
           ${rec.devs.length>1?`<label class="field"><span class="label">Input</span><select id="rec-dev">${rec.devs.map((x,i)=>`<option value="${esc(x.deviceId)}" ${x.deviceId===rec.devId?"selected":""}>${esc(x.label||"Input "+(i+1))}</option>`).join("")}</select></label>`:`<div class="field"><span class="label">Input</span><span>${esc(rec.devLabel||"Default microphone")}</span></div>`}
           <label class="field"><span class="label">Trigger</span><select id="rec-sens"><option value="3" ${rec.sens==3?"selected":""}>Sensitive (weak sensor signal)</option><option value="6" ${rec.sens==6?"selected":""}>Normal</option><option value="12" ${rec.sens==12?"selected":""}>Noisy room</option></select></label></div>
         ${rec.last?`<p class="hint" style="margin:10px 0 0">Last shot: <span class="mono">${esc(rec.last)}</span></p>`:""}</div>`
-      :`<p class="hint" style="margin:12px 0 0">Press Start listening, set the dial to ${esc(label)} and fire. The page catches each shot, measures it and moves on once this speed has ${st.reps} good shot${st.reps>1?"s":""}.</p>`}
+      :`<p class="hint" style="margin:12px 0 0">Press Start listening, set the dial to ${esc(label)} and fire. The page catches one shot per Arm, measures it and moves on once this speed has ${st.reps} good shot${st.reps>1?"s":""}. Wind the camera before you arm, so the winding isn't caught.</p>`}
       ${rec.err?`<p class="hint err" style="margin:10px 0 0">${esc(rec.err)}</p>`:""}
       <div class="tt-trace">${S?.trace?`<canvas class="wave" style="width:100%;height:110px;display:block" aria-label="Latest shot with the measured start and end marked"></canvas><div class="hint mono" style="font-size:.75rem">Latest trace · ${traceCaption(S.trace.trace)}</div>`
         :`<div class="tt-empty hint">${S?"Entered by hand, no trace.":"The trace of the shot appears here."}</div>`}
@@ -258,7 +266,8 @@ function bind(v,{speeds,mine,label,nom,stats}){
   $("#m-reps").onchange=e=>{st.reps=+e.target.value;saveSettings()};
   $("#m-note").oninput=e=>st.note=e.target.value;
   $("#m-test").onchange=e=>{st.withTest=e.target.checked;saveSettings()};
-  $("#rec-go").onclick=async()=>{if(rec.on){recStop();re();return}audioCtx();await recStart();re()};
+  $("#rec-go").onclick=async()=>{if(rec.on){recStop();re();return}audioCtx();if(await recStart())recArm();else re()};
+  $("#rec-arm")&&($("#rec-arm").onclick=()=>recArm(!rec.live));
   $("#rec-dev")&&($("#rec-dev").onchange=async e=>{recStop();rec.devId=e.target.value;audioCtx();await recStart();re()});
   $("#rec-wake")&&($("#rec-wake").onclick=async()=>{try{await rec.ctx?.resume()}catch{}if(rec.on&&!rec.blocks){const id=rec.devId;recStop();rec.devId=id;audioCtx();await recStart();re()}});
   $("#rec-sens")&&($("#rec-sens").onchange=e=>{rec.sens=+e.target.value});
@@ -283,5 +292,9 @@ function bind(v,{speeds,mine,label,nom,stats}){
   const cl=$("#m-clear");cl.onclick=()=>{if(cl.dataset.armed!=="1"){cl.dataset.armed="1";cl.textContent="Tap again to clear (save the file first)";return}
     const k=camKey();shots=shots.filter(s=>s.cam!==k);saveShots();errs={};rec.armed=null;toast("Shots cleared");re()};
 }
+document.addEventListener("keydown",e=>{
+  if(e.code!=="Space"||!rec.on||rec.state!=="listen"||e.target.closest?.("input,select,textarea,button"))return;
+  e.preventDefault();recArm(!rec.live);
+});
 document.addEventListener("visibilitychange",()=>{if(document.hidden&&rec.on){recStop();rec.err="Listening stopped because the page went to the background. Press Start again.";render()}});
 render();
