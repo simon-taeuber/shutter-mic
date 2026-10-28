@@ -34,24 +34,35 @@ const REC_PRE=0.35;
 const recTail=nom=>{const n=nom||0.5;return st.mode==="light"?Math.min(6,n+0.4):Math.min(6.5,n+0.7)};
 const micAllowed=()=>{try{const p=document.permissionsPolicy||document.featurePolicy;return p?.allowsFeature?p.allowsFeature("microphone"):true}catch{return true}};
 const framed=()=>{try{return window.top!==window.self}catch{return true}};
+/* The audio engine must be created and resumed inside the tap itself: browsers (Safari above all) keep a context that is
+   created after an await (here the permission prompt) suspended, and then no samples ever arrive. */
+function audioCtx(){
+  const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return null;
+  if(!rec.ctx||rec.ctx.state==="closed")rec.ctx=new AC();
+  try{rec.ctx.resume()}catch{}
+  return rec.ctx;
+}
 async function recStart(){
-  rec.err="";
+  rec.err="";rec.diag="";
   if(!micAllowed()){rec.err="This page is shown inside another site that doesn't allow the microphone. Open it in its own tab.";return false}
   if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia){rec.err="This browser gives the page no microphone access. Open the page over https (GitHub Pages) or from the file, not over plain http. Uploading a recording still works.";return false}
   try{rec.stream=await navigator.mediaDevices.getUserMedia({audio:{...(rec.devId?{deviceId:{exact:rec.devId}}:{}),echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}})}
   catch(e){const n=e?.name;rec.err=n==="NotAllowedError"||n==="SecurityError"?"The microphone was blocked for this page. Allow it with the icon in the address bar (or the phone's settings for this browser), then press Start again.":n==="NotFoundError"||n==="OverconstrainedError"?"No microphone or line input found. Plug the sensor in and try again.":"Could not open the microphone ("+(e?.message||n||"unknown error")+").";return false}
-  const AC=window.AudioContext||window.webkitAudioContext;rec.ctx=new AC();try{await rec.ctx.resume()}catch{}
+  if(!audioCtx()){rec.err="This browser has no Web Audio support. Uploading a recording still works.";recStop();return false}
+  try{await Promise.race([rec.ctx.resume(),new Promise(r=>setTimeout(r,800))])}catch{}
   rec.sr=rec.ctx.sampleRate;rec.ring=new Float32Array(Math.round(rec.sr*REC_PRE));Object.assign(rec,{ri:0,filled:0,blocks:0,floor:0,level:0,dc:0,cool:0,state:"listen",on:true,cap:null});
   rec.src=rec.ctx.createMediaStreamSource(rec.stream);rec.node=rec.ctx.createScriptProcessor(2048,1,1);const mute=rec.ctx.createGain();mute.gain.value=0;
   rec.node.onaudioprocess=e=>recBlock(e.inputBuffer.getChannelData(0));rec.src.connect(rec.node);rec.node.connect(mute);mute.connect(rec.ctx.destination);
+  rec.an=rec.ctx.createAnalyser();rec.an.fftSize=2048;rec.src.connect(rec.an);rec.anBuf=new Float32Array(rec.an.fftSize);
+  Object.assign(rec,{t0:performance.now(),peak:0,peakT:0,loudT:0});
   const t=rec.stream.getAudioTracks()[0];rec.devLabel=t?.label||"";try{rec.devId=t?.getSettings?.().deviceId||rec.devId;rec.devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="audioinput"&&d.deviceId)}catch{}
   t&&(t.onended=()=>{recStop();rec.err="The input was unplugged or taken by another app.";render()});
   return true;
 }
 function recStop(){
   if(!rec||!(rec.on||rec.stream))return;
-  try{if(rec.node){rec.node.onaudioprocess=null;rec.node.disconnect()}rec.src?.disconnect();rec.stream?.getTracks().forEach(t=>{t.onended=null;t.stop()});rec.ctx?.close?.()}catch{}
-  cancelAnimationFrame(rec.raf);Object.assign(rec,{on:false,stream:null,ctx:null,node:null,src:null,state:"idle",cap:null});
+  try{if(rec.node){rec.node.onaudioprocess=null;rec.node.disconnect()}rec.src?.disconnect();rec.an?.disconnect();rec.stream?.getTracks().forEach(t=>{t.onended=null;t.stop()});rec.ctx?.close?.()}catch{}
+  cancelAnimationFrame(rec.raf);Object.assign(rec,{on:false,stream:null,ctx:null,node:null,src:null,an:null,state:"idle",cap:null});
 }
 function recBlock(x){
   let pk=0;for(let i=0;i<x.length;i++){rec.dc+=(x[i]-rec.dc)*0.0005;const d=Math.abs(x[i]-rec.dc);if(d>pk)pk=d}
@@ -89,7 +100,21 @@ function recMeter(){
   cancelAnimationFrame(rec.raf);if(!rec.on)return;
   const bar=$("#rec-bar"),mk=$("#rec-thr"),sx=$("#rec-state");if(!bar)return;
   const pos=v=>Math.min(100,Math.sqrt(Math.min(1,v))*100);
-  bar.style.width=pos(rec.level)+"%";mk.style.left=pos(rec.thr)+"%";
+  // The analyser reads the input on its own path, so it tells "nothing arrives" apart from "the processing never runs".
+  const now=performance.now();let pk=0;
+  if(rec.an){rec.an.getFloatTimeDomainData(rec.anBuf);let m=0;for(const v of rec.anBuf)m+=v;m/=rec.anBuf.length;for(const v of rec.anBuf){const d=Math.abs(v-m);if(d>pk)pk=d}}
+  if(pk>rec.peak||now-rec.peakT>1000){rec.peak=pk;rec.peakT=now}
+  if(pk>0.0001)rec.loudT=now; // about -80 dB: only a muted or dead input is this quiet
+  const shown=Math.max(rec.level,rec.blocks?0:pk);
+  bar.style.width=pos(shown)+"%";mk.style.left=pos(rec.thr)+"%";
+  const db=rec.peak>0?(20*Math.log10(rec.peak)).toFixed(0)+" dB":"silent",run=rec.ctx?.state||"none",age=now-rec.t0;
+  const d=$("#rec-diag");
+  if(d)d.textContent=`${rec.devLabel||"Default input"} · ${Math.round(rec.sr/100)/10} kHz · audio ${run} · ${rec.blocks} blocks · peak ${db}`;
+  const msg=run!=="running"&&age>800?"The audio engine is paused by the browser. Tap Wake audio."
+    :age>1500&&!rec.blocks?"No audio blocks are reaching the page. Tap Wake audio, or Stop and Start again."
+    :age>3000&&now-rec.loudT>3000?"The input is completely silent. Check that the right input is picked, the sensor is plugged in and its volume is up (phone: the headset jack needs a 4-pole plug with the mic on the sleeve ring)."
+    :"";
+  if(msg!==rec.diag){rec.diag=msg;const w=$("#rec-warn");if(w){w.textContent=msg;w.hidden=!msg}$("#rec-wake")&&($("#rec-wake").hidden=!(run!=="running"||!rec.blocks))}
   sx.textContent=rec.state==="capture"?"Recording the shot…":rec.state==="busy"?"Measuring…":!rec.armed?"Pick a speed":rec.blocks<=12?"Getting the noise level…":`Ready for ${rec.armed}: set the dial and fire`;
   rec.raf=requestAnimationFrame(recMeter);
 }
@@ -184,6 +209,9 @@ function render(){
       ${rec.on?`<div style="margin-top:14px"><strong id="rec-state" class="state"></strong>
         <div class="meter" aria-hidden="true"><div id="rec-bar" class="meter-bar"></div><div id="rec-thr" class="meter-thr"></div></div>
         <div class="hint" style="font-size:.8rem">Level, with the trigger line. The line should sit well above the bar while nothing happens.</div>
+        <div class="hint mono" id="rec-diag" style="font-size:.75rem;margin-top:4px"></div>
+        <p class="hint err" id="rec-warn" style="margin:6px 0 0" ${rec.diag?"":"hidden"}>${esc(rec.diag)}</p>
+        <button type="button" id="rec-wake" class="small" style="margin-top:6px" hidden>Wake audio</button>
         <div class="grid2" style="margin-top:10px">
           ${rec.devs.length>1?`<label class="field"><span class="label">Input</span><select id="rec-dev">${rec.devs.map((x,i)=>`<option value="${esc(x.deviceId)}" ${x.deviceId===rec.devId?"selected":""}>${esc(x.label||"Input "+(i+1))}</option>`).join("")}</select></label>`:`<div class="field"><span class="label">Input</span><span>${esc(rec.devLabel||"Default microphone")}</span></div>`}
           <label class="field"><span class="label">Trigger</span><select id="rec-sens"><option value="3" ${rec.sens==3?"selected":""}>Sensitive (weak sensor signal)</option><option value="6" ${rec.sens==6?"selected":""}>Normal</option><option value="12" ${rec.sens==12?"selected":""}>Noisy room</option></select></label></div>
@@ -230,8 +258,9 @@ function bind(v,{speeds,mine,label,nom,stats}){
   $("#m-reps").onchange=e=>{st.reps=+e.target.value;saveSettings()};
   $("#m-note").oninput=e=>st.note=e.target.value;
   $("#m-test").onchange=e=>{st.withTest=e.target.checked;saveSettings()};
-  $("#rec-go").onclick=async()=>{if(rec.on){recStop();re();return}await recStart();re()};
-  $("#rec-dev")&&($("#rec-dev").onchange=async e=>{recStop();rec.devId=e.target.value;await recStart();re()});
+  $("#rec-go").onclick=async()=>{if(rec.on){recStop();re();return}audioCtx();await recStart();re()};
+  $("#rec-dev")&&($("#rec-dev").onchange=async e=>{recStop();rec.devId=e.target.value;audioCtx();await recStart();re()});
+  $("#rec-wake")&&($("#rec-wake").onclick=async()=>{try{await rec.ctx?.resume()}catch{}if(rec.on&&!rec.blocks){const id=rec.devId;recStop();rec.devId=id;audioCtx();await recStart();re()}});
   $("#rec-sens")&&($("#rec-sens").onchange=e=>{rec.sens=+e.target.value});
   if(rec.on)recMeter();
   const inp=$("#m-file");inp.onchange=async()=>{
