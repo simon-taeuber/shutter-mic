@@ -18,6 +18,7 @@
   --dof-yellow:#e2b63a;--dof-green:#5cbf7d;--dof-blue:#6aa6dc;--dof-red:#ef6a5f;color-scheme:dark}
 
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:17px;line-height:1.55;padding-bottom:env(safe-area-inset-bottom,0)}
 a{color:var(--accent)}
